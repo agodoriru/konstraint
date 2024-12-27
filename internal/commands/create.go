@@ -73,33 +73,33 @@ Create constraints with the Gatekeeper enforcement action set to dryrun
 }
 
 func runCreateCommand(path string) error {
-	violations, err := rego.GetViolations(path)
+	allSeverities, err := rego.GetAllSeverities(path)
 	if err != nil {
-		return fmt.Errorf("get violations: %w", err)
+		return fmt.Errorf("get all severities: %w", err)
 	}
 
-	for _, violation := range violations {
+	for _, rego := range allSeverities {
 		logger := log.WithFields(log.Fields{
-			"name": violation.Kind(),
-			"src":  violation.Path(),
+			"name": rego.Kind(),
+			"src":  rego.Path(),
 		})
 
-		if violation.SkipTemplate() {
+		if rego.SkipTemplate() {
 			logger.Info("Skipping constrainttemplate generation due to configuration")
 			continue
 		}
 
-		if !isValidEnforcementAction(violation.Enforcement()) {
-			return fmt.Errorf("enforcement action (%v) is invalid in policy: %s", violation.Enforcement(), violation.Path())
+		if !isValidEnforcementAction(rego.Enforcement()) {
+			return fmt.Errorf("enforcement action (%v) is invalid in policy: %s", rego.Enforcement(), rego.Path())
 		}
 
 		templateFileName := "template.yaml"
 		constraintFileName := "constraint.yaml"
-		outputDir := filepath.Dir(violation.Path())
+		outputDir := filepath.Dir(rego.Path())
 		if viper.GetString("output") != "" {
 			outputDir = viper.GetString("output")
-			templateFileName = fmt.Sprintf("template_%s.yaml", violation.Kind())
-			constraintFileName = fmt.Sprintf("constraint_%s.yaml", violation.Kind())
+			templateFileName = fmt.Sprintf("template_%s.yaml", rego.Kind())
+			constraintFileName = fmt.Sprintf("constraint_%s.yaml", rego.Kind())
 		}
 
 		if err := os.MkdirAll(outputDir, os.ModePerm); err != nil {
@@ -110,9 +110,9 @@ func runCreateCommand(path string) error {
 		var constraintTemplate any
 		switch constraintTemplateVersion {
 		case "v1":
-			constraintTemplate = getConstraintTemplatev1(violation, logger)
+			constraintTemplate = getConstraintTemplatev1(rego, logger)
 		case "v1beta1":
-			constraintTemplate = getConstraintTemplatev1beta1(violation, logger)
+			constraintTemplate = getConstraintTemplatev1beta1(rego, logger)
 		default:
 			return fmt.Errorf("unsupported API version for constrainttemplate: %s", constraintTemplateVersion)
 		}
@@ -126,18 +126,18 @@ func runCreateCommand(path string) error {
 			return fmt.Errorf("writing template: %w", err)
 		}
 
-		if viper.GetBool("skip-constraints") || violation.SkipConstraint() {
+		if viper.GetBool("skip-constraints") || rego.SkipConstraint() {
 			logger.Info("Skipping constraint generation due to configuration")
 			continue
 		}
 
 		// Skip Constraint generation if there are parameters on the template.
-		if !viper.GetBool("partial-constraints") && (len(violation.Parameters()) > 0 || len(violation.AnnotationParameters()) > 0) {
+		if !viper.GetBool("partial-constraints") && (len(rego.Parameters()) > 0 || len(rego.AnnotationParameters()) > 0) {
 			logger.Warn("Skipping constraint generation due to use of parameters")
 			continue
 		}
 
-		constraint, err := getConstraint(violation, logger)
+		constraint, err := getConstraint(rego, logger)
 		if err != nil {
 			return fmt.Errorf("get constraint: %w", err)
 		}
@@ -152,55 +152,55 @@ func runCreateCommand(path string) error {
 		}
 	}
 
-	log.WithField("num_policies", len(violations)).Info("completed successfully")
+	log.WithField("num_policies", len(allSeverities)).Info("completed successfully")
 
 	return nil
 }
 
-func getConstraintTemplatev1(violation rego.Rego, logger *log.Entry) *v1.ConstraintTemplate {
+func getConstraintTemplatev1(rego rego.Rego, logger *log.Entry) *v1.ConstraintTemplate {
 	constraintTemplate := v1.ConstraintTemplate{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "templates.gatekeeper.sh/v1",
 			Kind:       "ConstraintTemplate",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: violation.Name(),
+			Name: rego.Name(),
 		},
 		Spec: v1.ConstraintTemplateSpec{
 			CRD: v1.CRD{
 				Spec: v1.CRDSpec{
 					Names: v1.Names{
-						Kind: violation.Kind(),
+						Kind: rego.Kind(),
 					},
 				},
 			},
 			Targets: []v1.Target{
 				{
 					Target: "admission.k8s.gatekeeper.sh",
-					Libs:   violation.Dependencies(),
-					Rego:   violation.Source(),
+					Libs:   rego.Dependencies(),
+					Rego:   rego.Source(),
 				},
 			},
 		},
 	}
 
-	if len(violation.Parameters()) > 0 {
+	if len(rego.Parameters()) > 0 {
 		logger.Warn("Parameters" + legacyMigrationMessage)
 		constraintTemplate.Spec.CRD.Spec.Validation = &v1.Validation{
 			OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
-				Properties: violation.GetOpenAPISchemaProperties(),
+				Properties: rego.GetOpenAPISchemaProperties(),
 				Type:       "object",
 			},
 		}
 	}
 
-	if len(violation.AnnotationParameters()) > 0 {
+	if len(rego.AnnotationParameters()) > 0 {
 		if constraintTemplate.Spec.CRD.Spec.Validation != nil {
 			logger.Warn("Parameters already set with legacy annotations, overwriting the parameters using values from OPA Metadata")
 		}
 		constraintTemplate.Spec.CRD.Spec.Validation = &v1.Validation{
 			OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
-				Properties: violation.AnnotationParameters(),
+				Properties: rego.AnnotationParameters(),
 				Type:       "object",
 			},
 		}
@@ -209,49 +209,49 @@ func getConstraintTemplatev1(violation rego.Rego, logger *log.Entry) *v1.Constra
 	return &constraintTemplate
 }
 
-func getConstraintTemplatev1beta1(violation rego.Rego, logger *log.Entry) *v1beta1.ConstraintTemplate {
+func getConstraintTemplatev1beta1(rego rego.Rego, logger *log.Entry) *v1beta1.ConstraintTemplate {
 	constraintTemplate := v1beta1.ConstraintTemplate{
 		TypeMeta: metav1.TypeMeta{
 			APIVersion: "templates.gatekeeper.sh/v1beta1",
 			Kind:       "ConstraintTemplate",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: violation.Name(),
+			Name: rego.Name(),
 		},
 		Spec: v1beta1.ConstraintTemplateSpec{
 			CRD: v1beta1.CRD{
 				Spec: v1beta1.CRDSpec{
 					Names: v1beta1.Names{
-						Kind: violation.Kind(),
+						Kind: rego.Kind(),
 					},
 				},
 			},
 			Targets: []v1beta1.Target{
 				{
 					Target: "admission.k8s.gatekeeper.sh",
-					Libs:   violation.Dependencies(),
-					Rego:   violation.Source(),
+					Libs:   rego.Dependencies(),
+					Rego:   rego.Source(),
 				},
 			},
 		},
 	}
 
-	if len(violation.Parameters()) > 0 {
+	if len(rego.Parameters()) > 0 {
 		logger.Warn("Parameters" + legacyMigrationMessage)
 		constraintTemplate.Spec.CRD.Spec.Validation = &v1beta1.Validation{
 			OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
-				Properties: violation.GetOpenAPISchemaProperties(),
+				Properties: rego.GetOpenAPISchemaProperties(),
 			},
 		}
 	}
 
-	if len(violation.AnnotationParameters()) > 0 {
+	if len(rego.AnnotationParameters()) > 0 {
 		if constraintTemplate.Spec.CRD.Spec.Validation != nil {
 			logger.Warn("Parameters already set with legacy annotations, overwriting the parameters using values from OPA Metadata")
 		}
 		constraintTemplate.Spec.CRD.Spec.Validation = &v1beta1.Validation{
 			OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
-				Properties: violation.AnnotationParameters(),
+				Properties: rego.AnnotationParameters(),
 			},
 		}
 	}
@@ -259,27 +259,27 @@ func getConstraintTemplatev1beta1(violation rego.Rego, logger *log.Entry) *v1bet
 	return &constraintTemplate
 }
 
-func getConstraint(violation rego.Rego, logger *log.Entry) (*unstructured.Unstructured, error) {
+func getConstraint(rego rego.Rego, logger *log.Entry) (*unstructured.Unstructured, error) {
 	gvk := schema.GroupVersionKind{
 		Group:   "constraints.gatekeeper.sh",
 		Version: "v1beta1",
-		Kind:    violation.Kind(),
+		Kind:    rego.Kind(),
 	}
 
 	var constraint unstructured.Unstructured
 	constraint.SetGroupVersionKind(gvk)
-	constraint.SetName(violation.Name())
-	annotations := violation.Annotations()
+	constraint.SetName(rego.Name())
+	annotations := rego.Annotations()
 	if annotations != nil {
 		constraint.SetAnnotations(annotations)
 	}
-	labels := violation.Labels()
+	labels := rego.Labels()
 	if labels != nil {
 		constraint.SetLabels(labels)
 	}
 
-	if violation.Enforcement() != "deny" {
-		if err := unstructured.SetNestedField(constraint.Object, violation.Enforcement(), "spec", "enforcementAction"); err != nil {
+	if rego.Enforcement() != "deny" {
+		if err := unstructured.SetNestedField(constraint.Object, rego.Enforcement(), "spec", "enforcementAction"); err != nil {
 			return nil, fmt.Errorf("set constraint enforcement: %w", err)
 		}
 	}
@@ -292,7 +292,7 @@ func getConstraint(violation rego.Rego, logger *log.Entry) (*unstructured.Unstru
 		}
 	}
 
-	matchers, err := violation.Matchers()
+	matchers, err := rego.Matchers()
 	if err != nil {
 		return nil, fmt.Errorf("get matchers: %w", err)
 	}
@@ -332,7 +332,7 @@ func getConstraint(violation rego.Rego, logger *log.Entry) (*unstructured.Unstru
 		}
 	}
 
-	metadataMatchers, ok := violation.GetAnnotation("matchers")
+	metadataMatchers, ok := rego.GetAnnotation("matchers")
 	if ok {
 		if len(matchers.KindMatchers) > 0 ||
 			len(matchers.MatchLabelsMatcher) > 0 ||
@@ -348,15 +348,15 @@ func getConstraint(violation rego.Rego, logger *log.Entry) (*unstructured.Unstru
 	}
 
 	if viper.GetBool("partial-constraints") {
-		if len(violation.Parameters()) > 0 {
+		if len(rego.Parameters()) > 0 {
 			logger.Warn("Parameters" + legacyMigrationMessage)
-			if err := addParametersToConstraintLegacy(&constraint, violation.Parameters()); err != nil {
-				return nil, fmt.Errorf("add parameters %v to constraint: %w", violation.Parameters(), err)
+			if err := addParametersToConstraintLegacy(&constraint, rego.Parameters()); err != nil {
+				return nil, fmt.Errorf("add parameters %v to constraint: %w", rego.Parameters(), err)
 			}
 		}
-		if len(violation.AnnotationParameters()) > 0 {
-			if err := addParametersToConstraint(&constraint, violation.AnnotationParameters()); err != nil {
-				return nil, fmt.Errorf("add parameters %v to constraint: %w", violation.AnnotationParameters(), err)
+		if len(rego.AnnotationParameters()) > 0 {
+			if err := addParametersToConstraint(&constraint, rego.AnnotationParameters()); err != nil {
+				return nil, fmt.Errorf("add parameters %v to constraint: %w", rego.AnnotationParameters(), err)
 			}
 		}
 	}
