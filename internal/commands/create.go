@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"github.com/plexsystems/konstraint/internal/rego"
 
@@ -183,6 +184,9 @@ func getConstraintTemplatev1(rego rego.Rego, logger *log.Entry) *v1.ConstraintTe
 			},
 		},
 	}
+	if rego.Severity() == "Warning" {
+		constraintTemplate.Spec.Targets[0].Rego = overrideRuleToViolationFromWarn(rego.Source())
+	}
 
 	if len(rego.Parameters()) > 0 {
 		logger.Warn("Parameters" + legacyMigrationMessage)
@@ -235,6 +239,9 @@ func getConstraintTemplatev1beta1(rego rego.Rego, logger *log.Entry) *v1beta1.Co
 			},
 		},
 	}
+	if rego.Severity() == "Warning" {
+		constraintTemplate.Spec.Targets[0].Rego = overrideRuleToViolationFromWarn(rego.Source())
+	}
 
 	if len(rego.Parameters()) > 0 {
 		logger.Warn("Parameters" + legacyMigrationMessage)
@@ -257,6 +264,11 @@ func getConstraintTemplatev1beta1(rego rego.Rego, logger *log.Entry) *v1beta1.Co
 	}
 
 	return &constraintTemplate
+}
+
+func overrideRuleToViolationFromWarn(source string) string {
+	re := regexp.MustCompile(`warn\[(.*?)\]`)
+	return re.ReplaceAllString(source, "violation[$1]")
 }
 
 func getConstraint(rego rego.Rego, logger *log.Entry) (*unstructured.Unstructured, error) {
@@ -358,6 +370,12 @@ func getConstraint(rego rego.Rego, logger *log.Entry) (*unstructured.Unstructure
 			if err := addParametersToConstraint(&constraint, rego.AnnotationParameters()); err != nil {
 				return nil, fmt.Errorf("add parameters %v to constraint: %w", rego.AnnotationParameters(), err)
 			}
+		}
+	}
+
+	if rego.Severity() == "Warning" {
+		if err := unstructured.SetNestedField(constraint.Object, "warn", "spec", "enforcementAction"); err != nil {
+			return nil, fmt.Errorf("set constraint warn: %w", err)
 		}
 	}
 
